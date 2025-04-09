@@ -1,0 +1,129 @@
+#cloning the original repository and cding into the folder
+  !git clone https://github.com/facebookresearch/moco.git
+  %cd moco
+
+#installs torchvision and matplotlib
+  !pip install torchvision matplotlib
+
+#trains data
+  !python main_moco_extended.py \
+    --arch resnet18 \
+    --batch-size 128 \
+    --epochs 10 \
+    --moco-k 4096 \
+    --token-mixer \
+    --augmentation-type aggressive \
+    --log-file /content/train_log.txt
+
+#downloads cifar files
+  !wget https://www.cs.toronto.edu/~kriz/cifar-10-python.tar.gz
+
+#extracts cifar files
+  !tar -xzf cifar-10-python.tar.gz
+
+#converts the cifar dataset from its original pickle-based format into a folder structure
+#start
+  import pickle
+  from PIL import Image
+  import os
+  
+  CIFAR10_LABELS = [
+      "airplane", "automobile", "bird", "cat", "deer",
+      "dog", "frog", "horse", "ship", "truck"
+  ]
+  
+  def load_cifar10_batch(batch_path):
+      with open(batch_path, 'rb') as f:
+          batch_dict = pickle.load(f, encoding='bytes')
+          data = batch_dict[b'data']
+          labels = batch_dict[b'labels']
+      data = data.reshape(-1, 3, 32, 32)
+      return data, labels
+  
+  def convert_cifar10_to_imagefolder(cifar_dir, output_dir):
+      os.makedirs(output_dir, exist_ok=True)
+      for cls_name in CIFAR10_LABELS:
+          os.makedirs(os.path.join(output_dir, cls_name), exist_ok=True)
+  
+      for batch_num in range(1, 6):
+          batch_path = os.path.join(cifar_dir, f"data_batch_{batch_num}")
+          data, labels = load_cifar10_batch(batch_path)
+          for i in range(len(data)):
+              img = data[i].transpose(1, 2, 0)
+              label = CIFAR10_LABELS[labels[i]]
+              img_pil = Image.fromarray(img)
+              filename = f"{batch_num}_{i}.png"
+              path = os.path.join(output_dir, label, filename)
+              img_pil.save(path)
+  
+      test_path = os.path.join(cifar_dir, "test_batch")
+      if os.path.exists(test_path):
+          data, labels = load_cifar10_batch(test_path)
+          for i in range(len(data)):
+              img = data[i].transpose(1, 2, 0)
+              label = CIFAR10_LABELS[labels[i]]
+              img_pil = Image.fromarray(img)
+              filename = f"test_{i}.png"
+              path = os.path.join(output_dir, label, filename)
+              img_pil.save(path)
+  
+      print("Done: Converted CIFAR-10 to ImageFolder format.")
+  
+  convert_cifar10_to_imagefolder("cifar-10-batches-py", "/content/cifar_10_images")
+#end
+
+#picks one random image from each of the 10 cifar classes and displays them
+#start
+  import matplotlib.pyplot as plt
+  import os
+  from PIL import Image
+  import random
+  
+  root = "/content/cifar_10_images"
+  sample_images = []
+  for cls in CIFAR10_LABELS:
+      class_dir = os.path.join(root, cls)
+      file = random.choice(os.listdir(class_dir))
+      sample_images.append((cls, os.path.join(class_dir, file)))
+  
+  plt.figure(figsize=(12, 4))
+  for i, (label, path) in enumerate(sample_images):
+      img = Image.open(path)
+      plt.subplot(2, 5, i + 1)
+      plt.imshow(img)
+      plt.title(label)
+      plt.axis("off")
+  plt.suptitle("Sample CIFAR-10 Images")
+  plt.tight_layout()
+  plt.show()
+#end
+
+#sets up a resnet-18 model as a feature extractor that outputs a 128-dimensional embedding, loads pretrained weights from disk, places it on the GPU in inference mode, and freezes all its parameters
+#start
+  import torch
+  from torchvision.models import resnet18
+  import torch.nn as nn
+  
+  encoder = resnet18()
+  dim_mlp = encoder.fc.in_features
+  encoder.fc = nn.Linear(dim_mlp, 128)
+  encoder.load_state_dict(torch.load("/content/encoder_q.pth"))
+  encoder = encoder.cuda()
+  encoder.eval()
+  for param in encoder.parameters():
+      param.requires_grad = False
+#end
+
+#performs a linear classification on the extracted features using logistic regression
+#start
+  from sklearn.linear_model import LogisticRegression
+  from sklearn.metrics import accuracy_score
+  
+  clf = LogisticRegression(max_iter=1000, solver='lbfgs', multi_class='multinomial')
+  clf.fit(features, targets)
+  
+  preds = clf.predict(features)
+  acc = accuracy_score(targets, preds)
+  
+  print(f"Linear Evaluation Accuracy on CIFAR-10 (same-split): {acc * 100:.2f}%")
+#end
